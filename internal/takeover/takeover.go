@@ -20,7 +20,7 @@ import (
 // Phases a takeover moves through, in order. A later one is not started while an earlier one is missing.
 const (
 	PhaseNode   = "node"   // the persona-node binary is present and the supervisor survives a reboot
-	PhasePair   = "pair"   // tailcat is paired; the hub has an address to fall back to
+	PhasePair   = "pair"   // tailcat is paired on the box; its address stays there and is not written to the hub
 	PhaseSSH    = "ssh"    // the dedicated sshd accepts the hub's key, and the hub's ssh config names the node
 	PhasePlan   = "plan"   // the hub change is described and waiting for the user
 	PhaseLinked = "linked" // the user confirmed and the machine list was written, or it was already linked
@@ -33,7 +33,7 @@ type Report struct {
 	Node string
 	// NodeReady: persona-node is installed and its supervisor is running, with the reboot hooks in place.
 	NodeReady bool
-	// Paired: tailcat was paired and the hub can reach the node by it.
+	// Paired: tailcat was paired on the box. Its address stays there, so the hub entry Apply writes is ssh only.
 	Paired bool
 	// SSHReady: the dedicated sshd is up and the hub's ssh config names this node.
 	SSHReady bool
