@@ -1351,7 +1351,7 @@ func TestManifestAsksForNotifyAndTheHubBuild(t *testing.T) {
 	if !slices.Contains(m.Permissions.Hub, "notify") {
 		t.Errorf("alerts need the notify scope: %v", m.Permissions.Hub)
 	}
-	for _, keep := range []string{"machines.read", "browser.run"} {
+	for _, keep := range []string{"machines.read", "machines.exec", "browser.run"} {
 		if !slices.Contains(m.Permissions.Hub, keep) {
 			t.Errorf("lost scope %q: %v", keep, m.Permissions.Hub)
 		}
@@ -1364,7 +1364,7 @@ func TestManifestAsksForNotifyAndTheHubBuild(t *testing.T) {
 	if d := m.Configuration.Properties["inbox_push"].Default; d != true {
 		t.Errorf("inbox_push default: %v", d)
 	}
-	if pac.Version() != "0.7.13" {
+	if pac.Version() != "0.7.14" {
 		t.Errorf("version %s", pac.Version())
 	}
 }

@@ -178,8 +178,8 @@ var retryableLogin = []string{"NETWORK_ERROR", "UPSTREAM_ERROR", "RATE_LIMITED"}
 
 // accountsPage is the accounts UI. runtimeOn says whether the main assistant bridge runs (the setting
 // assistant_runtime), which decides whether an account's 主助手 switch does anything.
-func accountsPage(club *core.Club, hub *atomic.Pointer[ext.Hub], drv browser.Driver, runtimeOn *atomic.Bool, inboxCfg func() inboxConfig) ext.Page {
-	a := &accounts{club: club, hub: hub, browser: drv, runtimeOn: runtimeOn, inboxCfg: inboxCfg, terms: newTermState()}
+func accountsPage(club *core.Club, hub *atomic.Pointer[ext.Hub], drv browser.Driver, runtimeOn *atomic.Bool, machinesExecScope *atomic.Int32, inboxCfg func() inboxConfig) ext.Page {
+	a := &accounts{club: club, hub: hub, browser: drv, runtimeOn: runtimeOn, machinesExecScope: machinesExecScope, inboxCfg: inboxCfg, terms: newTermState()}
 	return ext.Page{Render: a.render, Action: a.action, Image: a.servePicture}
 }
 
@@ -230,16 +230,21 @@ func avatarTile(_ context.Context, r *ext.ImageRequest) (*wire.UIImage, error) {
 }
 
 type accounts struct {
-	club      *core.Club
-	hub       *atomic.Pointer[ext.Hub]
-	browser   browser.Driver
-	runtimeOn *atomic.Bool
-	inboxCfg  func() inboxConfig
-	terms     *termState
-	termExec  termRunner
+	club              *core.Club
+	hub               *atomic.Pointer[ext.Hub]
+	browser           browser.Driver
+	runtimeOn         *atomic.Bool
+	machinesExecScope *atomic.Int32
+	inboxCfg          func() inboxConfig
+	terms             *termState
+	termExec          termRunner
 }
 
 func (a *accounts) runtimeEnabled() bool { return a.runtimeOn == nil || a.runtimeOn.Load() }
+
+func (a *accounts) machinesExecDenied() bool {
+	return a.machinesExecScope != nil && a.machinesExecScope.Load() < 0
+}
 
 func (a *accounts) render(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
 	var st pageState
@@ -1819,7 +1824,8 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 		}
 		return done(l.t("已让它把电脑重新连上（电脑编号 "+mid+"）", "Asked it to reconnect its computer ("+mid+")"))
 	case actTermSaveSSH, actTermClearSSH, actTermProbe, actTermStage, actTermPreset, actTermExec, actTermCancel, actTermChatStage, actTermChatSend,
-		actTermComputerRefresh, actTermComputerStage, actTermComputerPreset, actTermComputerRun:
+		actTermComputerRefresh, actTermComputerStage, actTermComputerPreset, actTermComputerRun,
+		actTermMachineStage, actTermMachinePreset, actTermMachineExec:
 		return a.handleTerminalAction(ctx, r, l, st, done, refuse, failed)
 	}
 	return nil, nil

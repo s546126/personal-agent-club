@@ -25,6 +25,30 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.14 adds
+
+Interactive WebShell Phase 2 integrates the three Persona core terminal capabilities (`nwverse/persona#16741`):
+- **Direct native terminal deep link (`persona://terminal/<machine_id>`).** Confirmed paired Persona machines (Muse,
+  Grok Bot, echo) show an **打开原生终端 / Open native terminal** button with an explicit Chinese/English `Confirm`
+  dialog that navigates straight to `/machines/<id>/terminal`; zero terminal traffic or credentials pass through the
+  extension, and overview cards automatically strip terminal navigation actions.
+- **Owner-approved `machines.exec` for sandboxed environments without SSH.** `persona-extension.json` declares the
+  optional named Hub scope `machines.exec` (granted by name only; every call triggers a Persona owner approval card).
+  Paired machines expose a two-step command runner calling `ext.Hub.MachinesExec`, displaying cleaned stdout/stderr,
+  truncation, timeout, cancellation, and explicit owner denial feedback.
+- **Full interactive PTY WebShell (`contributes.terminal_sessions` + `github.com/creack/pty`).** Ensemble registers the
+  `terminal` JSON-RPC namespace (`terminal.open`, `terminal.input`, `terminal.resize`, `terminal.close`) and streams
+  ordered `terminal.frame` / `terminal.closed` events over real PTYs:
+  - Configured SSH / Tailscale SSH targets (`ssh:<account_id>`) run validated `exec.Command` argv sessions supporting
+    `vim`, `tmux`, `htop`, window resize (`SIGWINCH`), and `Ctrl-C`, with zero passwords or private keys written to disk.
+  - Local `echo` demo accounts (`echo:<account_id>` / `echo-demo`) provide a reproducible restricted sandbox PTY shell
+    for full end-to-end PTY I/O, resize, and teardown verification without external credentials.
+  - Enforces strict target validation, a 4-session concurrency cap, 30-minute idle timeout reclamation, and full
+    process-group teardown (`SIGTERM` -> `SIGKILL` to `-pgid`) to prevent orphan processes.
+
+Gemini cloud computer Task-mode WebShell (`0.7.12`) and the 5-level assistant control / FollowLease model (`0.7.13`)
+remain unchanged and fully compatible.
+
 ## What 0.7.12 adds
 
 Gemini accounts have a remote computer status card and confirmed WebShell on the Remote terminal page:

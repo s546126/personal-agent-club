@@ -292,10 +292,10 @@ func TestTerminalSSHReadOnlyProbeAndTwoStepConfirmation(t *testing.T) {
 		t.Fatalf("exhausted grok chat send was not blocked: toast=%q sent=%d", grokBlocked.Toast, len(grok.sentText))
 	}
 
-	// 6. Non-terminal hosted service (Claude Duet): clearly marked unsupported + blockers + no SSH form.
+	// 6. Non-terminal hosted service (Claude Duet): clearly marked unsupported + capabilities note + no SSH form.
 	duetView := renderTerm(duetAcct.AccountID)
 	duetTxt := text(duetView)
-	for _, want := range []string{"不支持终端", "托管网页服务", "nwverse/persona#16741", "卡点 1", "卡点 2", "卡点 3"} {
+	for _, want := range []string{"不支持终端", "托管网页服务", "nwverse/persona#16741", "能力 1", "能力 2", "能力 3"} {
 		if !strings.Contains(duetTxt, want) {
 			t.Errorf("duet terminal view lacks %q:\n%s", want, duetTxt)
 		}

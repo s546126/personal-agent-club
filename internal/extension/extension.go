@@ -93,14 +93,17 @@ func program(club *core.Club, version string, push pushFunc, onRound func()) ext
 	driver := browser.NewPersonaHubDriver(&hubPtr)
 	var runtimeOn atomic.Bool
 	runtimeOn.Store(true)
+	var demoEchoOn atomic.Bool
+	var machinesExecScope atomic.Int32 // 0 = unknown (tests without Init), 1 = granted, -1 = not granted
 	var cfgPtr atomic.Pointer[Config]
 	cfgPtr.Store(&Config{})
 	inboxCfg := func() inboxConfig { return cfgPtr.Load().inbox() }
 	in := newInbox(club, driver, inboxCfg)
 	note := newNotifier(in, hubPtr.Load, push)
 	note.onRound = onRound
-	page := accountsPage(club, &hubPtr, driver, &runtimeOn, inboxCfg)
+	page := accountsPage(club, &hubPtr, driver, &runtimeOn, &machinesExecScope, inboxCfg)
 	tool := toolsHandler(club, driver)
+	termBridge := newTerminalBridge(club, &hubPtr, &demoEchoOn)
 	return ext.Program{
 		ID:       ID,
 		Version:  version,
@@ -112,6 +115,12 @@ func program(club *core.Club, version string, push pushFunc, onRound func()) ext
 				return nil, err
 			}
 			runtimeOn.Store(cfg.assistantRuntimeEnabled())
+			demoEchoOn.Store(cfg.DemoEcho)
+			if slices.Contains(init.Hub.Scopes, "machines.exec") {
+				machinesExecScope.Store(1)
+			} else if len(init.Hub.Scopes) > 0 {
+				machinesExecScope.Store(-1)
+			}
 			cfgPtr.Store(&cfg)
 			if slices.Contains(init.Hub.Scopes, "notify") { // only when the owner granted it
 				hubAPIPtr.Store(&hubAPI{URL: init.Hub.URL, Token: init.Hub.Token})
@@ -170,7 +179,7 @@ func program(club *core.Club, version string, push pushFunc, onRound func()) ext
 			sub := club.Subscribe(core.DefaultSpace)
 			note.seed(ctx) // the log of alerts starts now: what waits already is remembered, not alerted
 			go note.run(ctx)
-			go forward(ctx, sub, hub, club, bridgeDone, note)
+			go forward(ctx, sub, hub, club, bridgeDone, note, termBridge)
 			// The connector as the manifest has it: the hub wants the program to say it has it.
 			var m struct {
 				Contributes struct {
@@ -190,6 +199,7 @@ func program(club *core.Club, version string, push pushFunc, onRound func()) ext
 				}
 				return tool(ctx, method, params)
 			},
+			ext.TerminalNamespace: ext.HandleTerminal(termBridge),
 			protocol.AgentSourceNamespace: func(ctx context.Context, method string, params json.RawMessage) (any, error) {
 				if c := ext.Contribution(params); c != "" && c != Contribution {
 					return nil, ext.NoContribution(c)
@@ -206,12 +216,13 @@ func program(club *core.Club, version string, push pushFunc, onRound func()) ext
 
 // forward sends the space's changes to the hub until the program ends, then closes the club. A change also redraws
 // the extension's pages where they are on screen (the hub coalesces these).
-func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *core.Club, bridgeDone <-chan struct{}, note *notifier) {
+func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *core.Club, bridgeDone <-chan struct{}, note *notifier, termBridge *terminalBridge) {
 	defer club.Close()
 	defer sub.Close()
 	for {
 		select {
 		case <-ctx.Done():
+			termBridge.CloseAll("extension_stopped")
 			if bridgeDone != nil {
 				<-bridgeDone
 			}

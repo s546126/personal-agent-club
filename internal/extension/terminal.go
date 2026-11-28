@@ -43,19 +43,24 @@ const (
 	actTermComputerStage   = "term_computer_stage"
 	actTermComputerPreset  = "term_computer_preset"
 	actTermComputerRun     = "term_computer_run"
+	actTermMachineStage    = "term_machine_stage"
+	actTermMachinePreset   = "term_machine_preset"
+	actTermMachineExec     = "term_machine_exec"
 
 	fieldTermSSHTarget    = "term_ssh_target"
 	fieldTermSSHTransport = "term_ssh_transport"
 	fieldTermCmd          = "term_cmd"
 	fieldTermChatCmd      = "term_chat_cmd"
 	fieldTermComputerCmd  = "term_computer_cmd"
+	fieldTermMachineCmd   = "term_machine_cmd"
 
 	valTermDigest = "digest"
 	valTermPreset = "preset"
 
-	termModeSSH      = "ssh"
-	termModeChat     = "chat"
-	termModeComputer = "computer"
+	termModeSSH         = "ssh"
+	termModeChat        = "chat"
+	termModeComputer    = "computer"
+	termModeMachineExec = "machines_exec"
 
 	providerGemini         = "gemini_tasks"
 	geminiSparkSettingsURL = "https://gemini.google.com/gemini-spark"
@@ -462,11 +467,19 @@ func (a *accounts) terminalView(ctx context.Context, r *ext.UIRequest, l lang, s
 	}
 	clk := a.clock(r)
 	now := a.club.Now()
+	var pairedMachine wire.MachinesStatusResult
+	var hasPairedMachine bool
+	if takeoverSupported(acct.Provider) && a.hub != nil {
+		if mst, ok := a.machineState(ctx, takeoverMachineID(acct)); ok && mst.Exists {
+			pairedMachine = mst
+			hasPairedMachine = true
+		}
+	}
 	v := &wire.View{Title: accountTitle(l, acct) + l.t(" · 远端终端", " · Terminal")}
 	var sections []wire.Section
 
-	// Section 1: Environment & read-only status.
-	envItems := a.terminalEnvItems(ctx, l, space, acct, saved, hasSSH, clk)
+	// Section 1: Environment & read-only status (includes paired native terminal link & interactive WebShell entry).
+	envItems := a.terminalEnvItems(ctx, l, space, acct, saved, hasSSH, pairedMachine, hasPairedMachine, clk)
 	sections = append(sections, wire.Section{
 		Title: l.t("环境与只读状态", "Environment & read-only status"),
 		Items: envItems,
@@ -526,6 +539,11 @@ func (a *accounts) terminalView(ctx context.Context, r *ext.UIRequest, l lang, s
 		sections = append(sections, a.terminalSSHRunnerSection(l, acct, saved, staged, hasStaged, clk))
 	}
 
+	// Section 3b: Owner-approved machines.exec command runner for paired, confirmed Persona machines (no SSH needed).
+	if hasPairedMachine && !pairedMachine.Pending {
+		sections = append(sections, a.terminalMachineExecSection(l, acct, pairedMachine, staged, hasStaged))
+	}
+
 	// Section 4: Chat-assisted sandbox runner for Muse / Grok Bot (works even without SSH).
 	if chatShellSupported(acct.Provider) {
 		sections = append(sections, a.terminalChatRunnerSection(l, acct, staged, hasStaged, now))
@@ -536,7 +554,7 @@ func (a *accounts) terminalView(ctx context.Context, r *ext.UIRequest, l lang, s
 		sections = append(sections, a.terminalComputerRunnerSection(l, acct, staged, hasStaged, now))
 	}
 
-	// Section 5: Recent SSH / cloud computer outputs (if any).
+	// Section 5: Recent SSH / machines.exec / cloud computer outputs (if any).
 	if hist := a.term().getHistory(acct.AccountID); len(hist) > 0 {
 		var hItems []wire.Component
 		for idx, rec := range hist {
@@ -575,26 +593,26 @@ func (a *accounts) terminalView(ctx context.Context, r *ext.UIRequest, l lang, s
 		})
 	}
 
-	// Section 6: Blockers & Persona core interfaces needed (always visible so limits are transparent).
+	// Section 6: Capabilities & limits (always visible so boundaries are transparent).
 	sections = append(sections, wire.Section{
-		Title: l.t("为什么还不能直接打开交互式网页终端", "Why an interactive webshell is not embedded yet"),
-		Footer: l.t("相关进展与接口提案持续跟踪在 nwverse/persona#16741。",
-			"Tracked with interface proposals in nwverse/persona#16741."),
+		Title: l.t("终端能力与边界说明", "Terminal capabilities & limits"),
+		Footer: l.t("相关接口与协议对应 nwverse/persona#16741；托管网页服务（如 Claude Duet、ChatGPT 网页版、Manus 与推理服务）本身不提供远端命令行。",
+			"Backed by nwverse/persona#16741; hosted web or inference services (Claude Duet, ChatGPT web, Manus, inference APIs) do not expose a direct shell."),
 		Items: []wire.Component{
 			{
 				Type:     "row",
-				Title:    l.t("卡点 1 · 无法直跳 Persona 终端页", "Blocker 1 · No terminal deep link"),
-				Subtitle: l.t("Persona 已有原生电脑终端页，但暂未向扩展开放带确认的跳转入口（例如 /machines/<id>/terminal）。", "Persona already has a native computer terminal tab, but extensions cannot open it via a confirmed deep link yet."),
+				Title:    l.t("能力 1 · 已配对机器直达原生终端", "Capability 1 · Direct native terminal link"),
+				Subtitle: l.t("已配对并确认的 Persona 机器可经二次确认直达原生终端，零终端流或凭据经由本扩展。", "Confirmed paired Persona machines open their native terminal after confirmation, with zero traffic or credentials passing through this extension."),
 			},
 			{
 				Type:     "row",
-				Title:    l.t("卡点 2 · 缺少沙箱内受控命令接口", "Blocker 2 · No owner-gated machines.exec"),
-				Subtitle: l.t("运行在沙箱中的扩展不能直接访问远端主机，需要 Persona 本体提供经主人逐次确认的单次命令执行能力。", "Sandboxed extensions need an owner-confirmed machines.exec capability from Persona core to run commands on a paired computer."),
+				Title:    l.t("能力 2 · 无 SSH 确认制单条命令", "Capability 2 · Owner-approved machines.exec"),
+				Subtitle: l.t("通过可选权限发起命令，经 Persona 主人审批卡同意后在配对电脑执行并回显输出，拒绝即拦截。", "Runs single commands on paired computers via optional machines.exec permission, gated by a Persona owner approval card."),
 			},
 			{
 				Type:     "row",
-				Title:    l.t("卡点 3 · 扩展页不支持实时交互终端组件", "Blocker 3 · No interactive PTY component"),
-				Subtitle: l.t("当前扩展页面是声明式组件，不能承载实时双向终端流（如 vim / top / 动态沙箱隧道）。", "Extension pages are declarative and cannot stream live interactive PTY sessions yet."),
+				Title:    l.t("能力 3 · 全功能交互式网页终端", "Capability 3 · Interactive PTY WebShell"),
+				Subtitle: l.t("已配置 SSH / Tailscale 主机或本地演练账号可打开真实交互式终端，支持 vim、tmux、htop、窗口缩放与断开清理。", "Configured SSH / Tailscale targets and local test accounts open real interactive PTY sessions with vim, tmux, htop, resize, and clean teardown."),
 			},
 		},
 	})
@@ -603,7 +621,7 @@ func (a *accounts) terminalView(ctx context.Context, r *ext.UIRequest, l lang, s
 	return v
 }
 
-func (a *accounts) terminalEnvItems(ctx context.Context, l lang, space *core.Space, acct protocol.Account, saved core.SSHTarget, hasSSH bool, clk clock) []wire.Component {
+func (a *accounts) terminalEnvItems(ctx context.Context, l lang, space *core.Space, acct protocol.Account, saved core.SSHTarget, hasSSH bool, pairedMachine wire.MachinesStatusResult, hasPairedMachine bool, clk clock) []wire.Component {
 	var items []wire.Component
 	switch acct.Provider {
 	case providerMuse:
@@ -796,9 +814,24 @@ func (a *accounts) terminalEnvItems(ctx context.Context, l lang, space *core.Spa
 			Type:     "row",
 			Title:    l.t("环境类型", "Environment"),
 			Value:    l.t("本地演练账号", "Local test account"),
-			Subtitle: l.t("可绑定任意受信任的 SSH 目标测试只读状态检查与二次确认命令执行。", "Bind any trusted SSH target to test read-only probes and confirmed command execution."),
-			Badge:    &wire.Badge{Text: l.t("支持 SSH", "SSH capable"), Tone: wire.ToneNeutral},
+			Subtitle: l.t("自带受限只读本地演练交互终端，也可绑定受信任的 SSH 目标测试只读状态检查与二次确认命令执行。", "Includes a restricted local sandbox interactive terminal and can also bind a trusted SSH target."),
+			Badge:    &wire.Badge{Text: l.t("可交互终端", "Interactive PTY"), Tone: wire.TonePositive},
 		})
+		if extURL, ok := extTerminalOpenURL(terminalTargetPrefixEcho + acct.AccountID); ok && acct.Status != protocol.AccountPaused {
+			items = append(items, wire.Component{
+				Type:  "button",
+				Key:   "open-echo-interactive-terminal",
+				Title: l.t("打开本地演练交互终端", "Open interactive sandbox terminal"),
+				Action: &wire.Action{
+					ID:   "open_echo_interactive_terminal",
+					Open: extURL,
+					Confirm: l.t(
+						"确认打开本地演练交互终端吗？它运行在隔离的受限只读沙箱中，可用于验证真实终端输入输出、窗口缩放与断开清理，无需外部账号凭据。",
+						"Open the local sandbox interactive terminal? It runs in a restricted read-only sandbox for testing live PTY I/O, resize, and clean teardown without external credentials.",
+					),
+				},
+			})
+		}
 	default:
 		kind := l.t("托管网页服务（无直接终端）", "Hosted web service (no direct shell)")
 		detail := l.t("这个服务不对外开放 SSH 或交互式命令行入口，因此无法在 Persona 里直接打开终端。", "This service does not expose SSH or an interactive shell, so a direct terminal cannot be opened.")
@@ -833,21 +866,49 @@ func (a *accounts) terminalEnvItems(ctx context.Context, l lang, space *core.Spa
 		}
 	}
 
-	if takeoverSupported(acct.Provider) && a.hub != nil {
-		if st, ok := a.machineState(ctx, takeoverMachineID(acct)); ok && st.Exists {
-			badgeText, badgeTone := l.t("离线", "Offline"), wire.ToneDanger
-			if st.Pending {
-				badgeText, badgeTone = l.t("待确认", "Pending"), wire.ToneCaution
-			} else if st.Online {
+	if hasPairedMachine {
+		st := pairedMachine
+		badgeText, badgeTone := l.t("离线", "Offline"), wire.ToneDanger
+		rowSub := l.t("请先在「机器」页确认这台电脑归属，确认后即可直达原生终端。", "Confirm this computer on the Machines page first to enable the native terminal link.")
+		if st.Pending {
+			badgeText, badgeTone = l.t("待确认", "Pending"), wire.ToneCaution
+		} else {
+			if st.Online {
 				badgeText, badgeTone = l.t("在线", "Online"), wire.TonePositive
 			}
-			items = append(items, wire.Component{
-				Type:     "row",
-				Title:    l.t("已接入的 Persona 机器", "Paired Persona machine"),
-				Value:    st.MachineID,
-				Subtitle: l.t("可直接前往 Persona「机器」页打开这台电脑的原生交互终端。", "Open this computer's native interactive terminal from Persona's Machines page."),
-				Badge:    &wire.Badge{Text: badgeText, Tone: badgeTone},
-			})
+			rowSub = l.t("点击下方按钮经主人确认后直达 Persona 原生交互终端，零终端流或凭据经由本扩展。", "Tap below to open Persona's native interactive terminal after confirmation; zero terminal traffic or credentials pass through this extension.")
+		}
+		machineLabel := st.Name
+		if strings.TrimSpace(machineLabel) == "" {
+			machineLabel = st.MachineID
+		}
+		items = append(items, wire.Component{
+			Type:     "row",
+			Title:    l.t("已接入的 Persona 机器", "Paired Persona machine"),
+			Value:    st.MachineID,
+			Subtitle: rowSub,
+			Badge:    &wire.Badge{Text: badgeText, Tone: badgeTone},
+		})
+		if !st.Pending {
+			if openURL, ok := nativeTerminalOpenURL(st.MachineID); ok {
+				offlineNote := ""
+				if !st.Online {
+					offlineNote = l.t("（当前显示离线，打开后可查看连接状态。）", " (Currently offline; opening will show connection status.) ")
+				}
+				items = append(items, wire.Component{
+					Type:  "button",
+					Key:   "open-native-terminal",
+					Title: l.t("打开原生终端", "Open native terminal"),
+					Action: &wire.Action{
+						ID:   "open_native_terminal",
+						Open: openURL,
+						Confirm: l.t(
+							"确认直接打开电脑「"+machineLabel+"」（"+st.MachineID+"）的 Persona 原生终端吗？"+offlineNote+"终端会话直连到 Persona 机器，本扩展不会接触终端内容或任何凭据。",
+							"Open Persona's native terminal for \""+machineLabel+"\" ("+st.MachineID+")?"+offlineNote+" The session connects directly to the machine; this extension never sees terminal traffic or credentials.",
+						),
+					},
+				})
+			}
 		}
 	}
 
@@ -859,6 +920,21 @@ func (a *accounts) terminalEnvItems(ctx context.Context, l lang, space *core.Spa
 			Subtitle: l.t("连接方式：", "Transport: ") + transportLabel(saved.Transport),
 			Badge:    &wire.Badge{Text: transportLabel(saved.Transport), Tone: wire.TonePositive},
 		})
+		if extURL, ok := extTerminalOpenURL(terminalTargetPrefixSSH + acct.AccountID); ok && acct.Status != protocol.AccountPaused {
+			items = append(items, wire.Component{
+				Type:  "button",
+				Key:   "open-ssh-interactive-terminal",
+				Title: l.t("打开交互式网页终端", "Open interactive WebShell"),
+				Action: &wire.Action{
+					ID:   "open_ssh_interactive_terminal",
+					Open: extURL,
+					Confirm: l.t(
+						"确认打开指向 "+saved.Target+"（"+transportLabel(saved.Transport)+"）的交互式网页终端吗？支持 vim、tmux、htop、窗口缩放与 Ctrl-C，密码和私钥绝不落盘。",
+						"Open an interactive WebShell to "+saved.Target+" ("+transportLabel(saved.Transport)+")? Supports vim, tmux, htop, window resize, and Ctrl-C; passwords and keys are never stored.",
+					),
+				},
+			})
+		}
 		items = append(items, wire.Component{
 			Type:   "button",
 			Title:  l.t("检查远端状态（只读）", "Check remote status (read-only)"),
@@ -944,6 +1020,87 @@ func (a *accounts) terminalSSHRunnerSection(l lang, acct protocol.Account, saved
 		Title: l.t("经确认执行命令（SSH）", "Confirmed command execution (SSH)"),
 		Footer: l.t("所有命令必须先「准备执行」核对内容，再经「确认执行」二次确认才会发往 "+saved.Target+"；单次超时 20 秒，输出上限 16 KB。",
 			"Every command must be staged and explicitly confirmed before running on "+saved.Target+"; 20 s timeout, 16 KB output cap."),
+		Items: items,
+	}
+}
+
+func (a *accounts) terminalMachineExecSection(l lang, acct protocol.Account, st wire.MachinesStatusResult, staged stagedCommand, hasStaged bool) wire.Section {
+	var items []wire.Component
+	machineLabel := st.Name
+	if strings.TrimSpace(machineLabel) == "" {
+		machineLabel = st.MachineID
+	}
+	if a.machinesExecDenied() {
+		items = append(items, wire.Component{
+			Type:     "row",
+			Key:      "term-machine-exec-scope-note",
+			Icon:     "warning",
+			Title:    l.t("尚未开启「在配对电脑执行命令」权限", "Machine command permission not enabled"),
+			Subtitle: l.t("这是可选权限：如要在无 SSH 时经审批执行命令，请在 Persona 扩展权限设置里开启后再使用。", "This permission is optional: enable machines.exec in Persona's extension permissions to run owner-approved commands without SSH."),
+			Badge:    &wire.Badge{Text: l.t("可选权限", "Optional"), Tone: wire.ToneNeutral},
+		})
+	}
+	if !st.Online {
+		items = append(items, wire.Component{
+			Type:     "row",
+			Key:      "term-machine-exec-offline-note",
+			Icon:     "warning",
+			Title:    l.t("配对电脑当前离线", "Paired computer is offline"),
+			Subtitle: l.t("机器重新上线后，经审批的单条命令即可直接在这台电脑上执行。", "Once the computer comes back online, owner-approved commands will run directly on it."),
+			Badge:    &wire.Badge{Text: l.t("离线", "Offline"), Tone: wire.ToneCaution},
+		})
+	}
+	if hasStaged && staged.Mode == termModeMachineExec {
+		items = append(items,
+			wire.Component{
+				Type:     "row",
+				Key:      "term-machine-staged-banner",
+				Icon:     "warning",
+				Title:    l.t("待提交主人审批执行的命令", "Command waiting to request owner approval"),
+				Subtitle: l.t("目标电脑："+machineLabel+"（"+st.MachineID+"）。点下方按钮后，Persona 会弹出主人审批卡，同意后才真正执行。", "Target machine: "+machineLabel+" ("+st.MachineID+"). Tapping below triggers Persona's owner approval card before running."),
+				Badge:    &wire.Badge{Text: l.t("待审批", "Approve"), Tone: wire.ToneCaution},
+			},
+			wire.Component{Type: "code", Language: "sh", Text: staged.Command},
+			wire.Component{
+				Type:  "button",
+				Title: l.t("提交主人审批并执行", "Request owner approval and run"),
+				Action: &wire.Action{
+					ID:     actTermMachineExec,
+					Values: map[string]string{valTermDigest: staged.Digest},
+					Confirm: l.t("确认向 Persona 发起审批，在电脑「"+machineLabel+"」上执行这条命令？\n\n"+staged.Command,
+						"Request owner approval from Persona to run this command on \""+machineLabel+"\"?\n\n"+staged.Command),
+				},
+			},
+			wire.Component{
+				Type:   "button",
+				Title:  l.t("取消待执行命令", "Cancel staged command"),
+				Action: &wire.Action{ID: actTermCancel},
+			},
+		)
+	}
+	items = append(items,
+		wire.Component{
+			Type:        "field",
+			Name:        fieldTermMachineCmd,
+			Label:       l.t("要在配对电脑执行的命令", "Command for paired machine"),
+			Kind:        wire.FieldKindText,
+			Placeholder: l.t("例如 uname -a、uptime 或 df -h", "e.g. uname -a, uptime, or df -h"),
+		},
+		wire.Component{
+			Type:   "button",
+			Title:  l.t("准备执行（下一步提交审批）", "Stage command (approve next)"),
+			Action: &wire.Action{ID: actTermMachineStage, Submit: true},
+		},
+		wire.Component{
+			Type:   "button",
+			Title:  l.t("快速预填：查看系统与磁盘（只读）", "Quick stage: system & disk (read-only)"),
+			Action: &wire.Action{ID: actTermMachinePreset, Values: map[string]string{valTermPreset: "uname -srm && df -h"}},
+		},
+	)
+	return wire.Section{
+		Title: l.t("经审批在配对电脑执行命令（无需 SSH）", "Owner-approved machine command (machines.exec)"),
+		Footer: l.t("适用于沙箱无 SSH 场景：命令先在此核对，再由 Persona 主人审批卡逐次放行后在 "+st.MachineID+" 上执行并回显输出；单次超时 20 秒，输出上限 16 KB。",
+			"For sandboxed environments without SSH: every command is staged here and then requires explicit Persona owner approval before running on "+st.MachineID+"; 20 s timeout, 16 KB output cap."),
 		Items: items,
 	}
 }
@@ -1292,6 +1449,112 @@ func (a *accounts) handleTerminalAction(ctx context.Context, r *ext.UIRequest, l
 		a.term().clearStaged(acct.AccountID)
 		return done(l.t("已取消待执行命令", "Canceled staged command"))
 
+	case actTermMachineStage, actTermMachinePreset:
+		if !takeoverSupported(acct.Provider) || a.hub == nil {
+			return refuse(l.t("这个账号没有可用的已配对 Persona 机器。", "This account does not have a paired Persona machine."))
+		}
+		mid := takeoverMachineID(acct)
+		mst, ok := a.machineState(ctx, mid)
+		if !ok || !mst.Exists {
+			return refuse(l.t("这台电脑尚未接入 Persona，请先在账号页完成接入。", "This machine is not paired with Persona yet; pair it on the account page first."))
+		}
+		if mst.Pending {
+			return refuse(l.t("配对电脑尚未完成主人确认，请先到「机器」页确认。", "The paired computer is still pending confirmation on the Machines page."))
+		}
+		rawCmd := r.Values[fieldTermMachineCmd]
+		if r.Action == actTermMachinePreset {
+			rawCmd = r.Values[valTermPreset]
+		}
+		cmd, cerr := validateTerminalCommand(rawCmd)
+		if cerr != nil {
+			return refuse(commandValidationWords(l, cerr))
+		}
+		digest := commandDigest(termModeMachineExec, mst.MachineID, termModeMachineExec, cmd)
+		a.term().putStaged(acct.AccountID, stagedCommand{
+			Mode:      termModeMachineExec,
+			Target:    mst.MachineID,
+			Transport: termModeMachineExec,
+			Command:   cmd,
+			Digest:    digest,
+			StagedAt:  now,
+		})
+		return done(l.t("已准备好命令，请核对后点「提交主人审批并执行」", "Command staged; review it and tap Request owner approval and run"))
+
+	case actTermMachineExec:
+		if !takeoverSupported(acct.Provider) || a.hub == nil {
+			return refuse(l.t("这个账号没有可用的已配对 Persona 机器。", "This account does not have a paired Persona machine."))
+		}
+		hub := a.hub.Load()
+		if hub == nil {
+			return refuse(l.t("当前无法连接到 Persona，请稍后再试。", "Cannot reach Persona right now; try again shortly."))
+		}
+		mid := takeoverMachineID(acct)
+		sc, ok := a.term().popStaged(acct.AccountID, termModeMachineExec, r.Values[valTermDigest], now)
+		if !ok || sc.Target != mid {
+			return refuse(l.t("待审批命令已过期或已变动，请重新准备后再提交审批。", "Staged command expired or changed; stage it again before requesting approval."))
+		}
+		ectx, cancel := context.WithTimeout(ctx, termExecTimeout+5*time.Second)
+		defer cancel()
+		execReason := fmt.Sprintf("Ensemble (%s) remote terminal command", accountName(acct))
+		res, rerr := hub.MachinesExec(ectx, wire.MachinesExecParams{
+			MachineID:      wire.HubMachineID(mid),
+			Command:        sc.Command,
+			TimeoutMs:      int(termExecTimeout.Milliseconds()),
+			MaxOutputBytes: termMaxOutputSize,
+			Reason:         execReason,
+		})
+		if rerr != nil {
+			msg := describeMachineExecError(l, rerr)
+			a.term().addHistory(acct.AccountID, termRunRecord{
+				Target:    mid,
+				Transport: termModeMachineExec,
+				Command:   sc.Command,
+				RanAt:     now.UnixMilli(),
+				ExitCode:  1,
+				ErrMsg:    msg,
+			})
+			return refuse(msg)
+		}
+		outText, localTrunc := capTerminalOutput(res.Output, termMaxOutputSize)
+		rec := termRunRecord{
+			Target:     string(res.MachineID),
+			Transport:  termModeMachineExec,
+			Command:    sc.Command,
+			RanAt:      now.UnixMilli(),
+			ExitCode:   res.ExitCode,
+			DurationMs: res.DurationMs,
+			Output:     outText,
+			Truncated:  res.Truncated || localTrunc,
+		}
+		if rec.Target == "" {
+			rec.Target = mid
+		}
+		if res.TimedOut {
+			rec.ErrMsg = l.t("命令执行超时，已在规定时间终止。", "Command timed out.")
+		} else if res.Cancelled {
+			rec.ErrMsg = l.t("命令执行已取消。", "Command was cancelled.")
+		}
+		a.term().addHistory(acct.AccountID, rec)
+		if res.TimedOut {
+			st.Note = rec.ErrMsg
+			st.NoteTone = wire.ToneCaution
+			return &wire.ActionResult{View: a.view(ctx, r, st), Toast: st.Note}, nil
+		}
+		if res.Cancelled {
+			st.Note = rec.ErrMsg
+			st.NoteTone = wire.ToneNeutral
+			return &wire.ActionResult{View: a.view(ctx, r, st), Toast: st.Note}, nil
+		}
+		if res.ExitCode != 0 {
+			st.Note = fmt.Sprintf(l.t("命令已在配对电脑执行完成，退出码 %d", "Command finished on paired machine with exit code %d"), res.ExitCode)
+			st.NoteTone = wire.ToneCaution
+			return &wire.ActionResult{View: a.view(ctx, r, st), Toast: st.Note}, nil
+		}
+		if rec.Truncated {
+			return done(l.t("命令已审批执行完成（退出码 0，输出已截断）", "Approved command finished (exit 0, output truncated)"))
+		}
+		return done(l.t("命令已审批执行完成（退出码 0）", "Approved command finished (exit 0)"))
+
 	case actTermComputerRefresh:
 		if acct.Provider != providerGemini {
 			return refuse(l.t("这个账号不支持 Gemini 云电脑状态检查。", "This account does not support Gemini cloud computer status checks."))
@@ -1448,13 +1711,39 @@ func describeTermError(l lang, transport string, err error) string {
 	}
 	if errors.Is(err, exec.ErrNotFound) {
 		if transport == core.TransportTailscale {
-			return l.t("当前环境里找不到 tailscale 命令：如果扩展运行在受限沙箱中，或本机未安装 Tailscale CLI，可改用普通 SSH，或等待 Persona 本体开放机器执行接口（nwverse/persona#16741）。",
-				"tailscale binary was not found in this environment; switch to plain SSH or wait for Persona core's machines.exec capability (nwverse/persona#16741).")
+			return l.t("当前环境里找不到 tailscale 命令：如果扩展运行在受限沙箱中，或本机未安装 Tailscale CLI，可改用普通 SSH，或使用已配对机器的审批命令执行。",
+				"tailscale binary was not found in this environment; switch to plain SSH or use owner-approved machines.exec on a paired machine.")
 		}
-		return l.t("当前环境里找不到 ssh 命令（可能被扩展沙箱限制）：需要 Persona 本体开放机器执行接口后才能代为运行（nwverse/persona#16741）。",
-			"ssh binary is unavailable in this environment (likely restricted by the extension sandbox); Persona core's machines.exec is needed (nwverse/persona#16741).")
+		return l.t("当前环境里找不到 ssh 命令（可能被扩展沙箱限制）：可使用已配对机器的「经审批在配对电脑执行命令」或直达原生终端。",
+			"ssh binary is unavailable in this environment (likely restricted by the extension sandbox); use owner-approved machines.exec or open the native terminal on a paired machine.")
 	}
 	return l.t("无法启动远端连接："+err.Error(), "Failed to start remote connection: "+err.Error())
+}
+
+func describeMachineExecError(l lang, err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return l.t("等待审批或执行超时，未确认命令是否完成。", "Timed out waiting for approval or execution.")
+	}
+	var ee *ext.Error
+	if errors.As(err, &ee) {
+		switch ee.Code {
+		case "user_denied":
+			return l.t("主人已拒绝这次审批，未在配对电脑执行命令。", "Owner declined the approval card; nothing was run on the machine.")
+		case "approval_not_granted":
+			return l.t("命令审批未通过或已超时，未在配对电脑执行。", "Command approval was not granted or timed out; nothing was run.")
+		case "permission_denied":
+			return l.t("尚未授予「在配对电脑执行命令」权限：请在 Persona 扩展权限设置中开启后再试。", "machines.exec permission is not granted; enable it in Persona's extension permissions first.")
+		case "machine_offline":
+			return l.t("配对电脑当前离线，无法执行命令。", "The paired computer is offline.")
+		case "machine_pending":
+			return l.t("配对电脑尚未完成主人确认，请先到「机器」页确认。", "The paired computer is still pending confirmation on the Machines page.")
+		case "node_outdated":
+			return l.t("这台电脑上的节点版本过旧，暂不支持受控命令执行，请先升级节点。", "The computer's node does not support machines.exec yet; upgrade the node first.")
+		case "not_found", "other_manager":
+			return l.t("找不到这台配对电脑或当前无权访问它。", "Paired computer was not found or is not owned by this manager.")
+		}
+	}
+	return l.t("命令未能执行："+err.Error(), "Command failed: "+err.Error())
 }
 
 func transportLabel(t string) string {
@@ -1479,17 +1768,17 @@ func boxStateLabel(l lang, state string) (string, string) {
 	}
 }
 
-func (a *accounts) machineState(ctx context.Context, mid string) (machineStatusResult, bool) {
+func (a *accounts) machineState(ctx context.Context, mid string) (wire.MachinesStatusResult, bool) {
 	if a.hub == nil {
-		return machineStatusResult{}, false
+		return wire.MachinesStatusResult{}, false
 	}
 	hub := a.hub.Load()
 	if hub == nil {
-		return machineStatusResult{}, false
+		return wire.MachinesStatusResult{}, false
 	}
-	var st machineStatusResult
-	if err := hub.Call(ctx, methodMachinesStatus, machineStatusParams{MachineID: mid}, &st); err != nil {
-		return machineStatusResult{}, false
+	st, err := hub.MachinesStatus(ctx, wire.MachinesStatusParams{MachineID: mid})
+	if err != nil {
+		return wire.MachinesStatusResult{}, false
 	}
 	return st, true
 }
